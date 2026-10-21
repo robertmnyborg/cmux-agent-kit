@@ -1,0 +1,31 @@
+#!/bin/zsh
+# Tandem: a broad-context agent on the left, Claude Code on the right.
+#   Inside cmux:  splits the current pane right and starts the right-hand command there.
+#   Outside cmux: creates a workspace "tandem-<dir>" with both panes side by side.
+# Usage: cmux-tandem [DIR]
+#
+# CMUX_TANDEM_LEFT_CMD   left pane command   (default: agy, the Antigravity CLI)
+# CMUX_TANDEM_RIGHT_CMD  right pane command  (default: claude)
+set -e
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$PATH"
+LEFT=${CMUX_TANDEM_LEFT_CMD:-agy}
+RIGHT=${CMUX_TANDEM_RIGHT_CMD:-claude}
+
+if cmux current-workspace >/dev/null 2>&1; then
+  RES=$(cmux new-split right 2>&1)
+  SURFACE=$(print -r -- "$RES" | grep -oE 'surface:[0-9]+' | head -1)
+  if [[ -n $SURFACE ]]; then
+    cmux send --surface "$SURFACE" "$RIGHT\n"
+    echo "Split right in current window: $SURFACE running $RIGHT"
+  else
+    echo "Failed to split current window: $RES"
+    exit 1
+  fi
+else
+  DIR=${1:-$PWD}
+  WS_NAME="tandem-${DIR:t}"
+  LAYOUT=$(python3 -c 'import json,sys
+def pane(c): return {"pane": {"surfaces": [{"type": "terminal", "command": c}]}}
+print(json.dumps({"direction": "horizontal", "split": 0.5, "children": [pane(sys.argv[1]), pane(sys.argv[2])]}))' "$LEFT" "$RIGHT")
+  cmux new-workspace --name "$WS_NAME" --cwd "$DIR" --layout "$LAYOUT" --focus true
+fi

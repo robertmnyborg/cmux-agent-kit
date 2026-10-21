@@ -1,0 +1,28 @@
+#!/bin/zsh
+# Open a child Claude session in a new tab next to the current one and record the parent->child edge.
+# Usage: cmux-spinoff "<tab title>" <handoff-brief.md> [--focus]
+#
+# Edges append to $OVERWORLD_DIR/edges.jsonl (default ~/.overworld), the file the
+# agent-overworld map reads to draw child tabs under their parent.
+set -euo pipefail
+export CMUX_QUIET=1
+title=${1:?usage: cmux-spinoff "<tab title>" <brief.md> [--focus]}
+brief=${2:?usage: cmux-spinoff "<tab title>" <brief.md> [--focus]}
+brief=${brief:A} focus=${3:-}
+[[ -f "$brief" ]] || { echo "brief not found: $brief" >&2; exit 1; }
+: "${CMUX_SURFACE_ID:?run inside a cmux terminal}"
+OVERWORLD_DIR=${OVERWORLD_DIR:-$HOME/.overworld}
+
+pane=$(cmux --json identify | python3 -c 'import sys,json; print(json.load(sys.stdin)["caller"]["pane_ref"])')
+cwd=$PWD
+child=$(cmux --id-format uuids new-surface --type terminal --pane "$pane" --working-directory "$cwd" \
+  | awk '{print $2}')
+cmux rename-tab --surface "$child" "$title" >/dev/null
+cmux send --surface "$child" "claude \"Read $brief, then continue that thread from where it leaves off.\"\n" >/dev/null
+
+mkdir -p "$OVERWORLD_DIR"
+python3 -c 'import json,sys,time; print(json.dumps({"parent": sys.argv[1], "child": sys.argv[2], "workspace": sys.argv[3], "title": sys.argv[4], "brief": sys.argv[5], "at": time.time()}))' \
+  "$CMUX_SURFACE_ID" "$child" "$CMUX_WORKSPACE_ID" "$title" "$brief" >> "$OVERWORLD_DIR/edges.jsonl"
+
+if [[ "$focus" == "--focus" ]]; then cmux focus-panel --panel "$child" >/dev/null; fi
+echo "spun off $child ($title)"

@@ -1,0 +1,87 @@
+#!/bin/zsh
+# Pair two tabs of the current cmux space into a new space ("A + B") in the same
+# folder, side by side. `cmux-pair --unpair` (run inside a paired space) moves the
+# tabs back to the space they came from and closes the pair.
+#
+# Runs from a cmux action (target newTabInCurrentPane), so this script lives in a
+# throwaway tab: $CMUX_SURFACE_ID is that tab, $CMUX_WORKSPACE_ID its space.
+# Uses only the public cmux CLI, so cmux updates do not break it.
+set -euo pipefail
+export CMUX_QUIET=1
+CMUX=${CMUX_BUNDLED_CLI_PATH:-cmux}
+STATE_DIR=${XDG_STATE_HOME:-$HOME/.local/state}/cmux-pair
+SELF=$CMUX_SURFACE_ID
+HERE=$CMUX_WORKSPACE_ID
+
+tree_json() { $CMUX --json tree --workspace "$1"; }
+self_ref() { tree_json "$HERE" | jq -r '.caller.surface_ref'; }
+close_self() { $CMUX close-surface --surface "$SELF" >/dev/null; }
+fail() { print -u2 "cmux-pair: $1"; read -k1 '?Press any key to close.'; close_self; exit 1; }
+
+pick_tabs() {
+  local me=$(self_ref)
+  tree_json "$HERE" |
+    jq -r --arg me "$me" '.windows[].workspaces[].panes[].surfaces[]
+      | select(.ref != $me) | "\(.ref)\t\(.title)"' |
+    fzf --multi --with-nth=2 --delimiter='\t' \
+        --header='Pick 2 tabs (Tab to mark, Enter to pair, Esc to cancel)' || true
+}
+
+tab_title() { tree_json "$HERE" | jq -r --arg r "$1" '.windows[].workspaces[].panes[].surfaces[] | select(.ref == $r) | .title'; }
+
+# pair [LEFT_REF RIGHT_REF]; with no refs, pick them in fzf.
+pair() {
+  local left right
+  if (( $# == 2 )); then
+    left=$1 right=$2
+  else
+    local picks=("${(@f)$(pick_tabs)}")
+    [[ -z ${picks[1]:-} ]] && { close_self; exit 0; }
+    (( ${#picks} == 2 )) || fail "pick exactly 2 tabs (got ${#picks})"
+    left=${picks[1]%%$'\t'*} right=${picks[2]%%$'\t'*}
+  fi
+  local title="$(tab_title "$left") + $(tab_title "$right")"
+
+  local new=$($CMUX move-tab-to-new-workspace --tab "$left" --workspace "$HERE" \
+    --title "$title" --focus false | grep -oE 'workspace:[0-9]+' | head -1)
+  $CMUX move-surface --surface "$right" --workspace "$new" --focus false >/dev/null
+  $CMUX drag-surface-to-split --surface "$right" right --workspace "$new" --focus false >/dev/null
+
+  local here_ref=$(tree_json "$HERE" | jq -r '.windows[].workspaces[0].ref')
+  local group=$($CMUX workspace-group list --json | jq -r --arg ws "$here_ref" \
+    '.groups[] | select(.member_workspace_refs | index($ws)) | .ref' | head -1)
+  [[ -n $group ]] && $CMUX workspace-group add --group "$group" --workspace "$new" >/dev/null
+
+  local new_id=$(tree_json "$new" | jq -r '.windows[].workspaces[0].id')
+  mkdir -p "$STATE_DIR"
+  for f in "$STATE_DIR"/*(N); do  # forget pairs closed by hand instead of unpaired
+    tree_json "${f:t}" >/dev/null 2>&1 || rm -f "$f"
+  done
+  print -r -- "$HERE" > "$STATE_DIR/$new_id"
+
+  $CMUX select-workspace --workspace "$new" >/dev/null
+  close_self
+}
+
+unpair() {
+  local state="$STATE_DIR/$HERE"
+  [[ -f $state ]] || fail "this space is not a pair made by cmux-pair"
+  local origin=$(<"$state")
+  tree_json "$origin" >/dev/null 2>&1 || fail "the original space is gone; move the tabs by hand"
+
+  local me=$(self_ref)
+  for ref in $(tree_json "$HERE" | jq -r --arg me "$me" \
+      '.windows[].workspaces[].panes[].surfaces[] | select(.ref != $me) | .ref'); do
+    $CMUX move-surface --surface "$ref" --workspace "$origin" --focus false >/dev/null
+  done
+  rm -f "$state"
+  $CMUX select-workspace --workspace "$origin" >/dev/null
+  $CMUX close-workspace --workspace "$HERE" >/dev/null  # only this script's tab is left
+}
+
+case ${1:-} in
+  --unpair) unpair ;;
+  "") pair ;;
+  surface:*) (( $# == 2 )) && pair "$1" "$2" ;;
+  *) print -u2 "usage: cmux-pair [LEFT_REF RIGHT_REF] | --unpair"; exit 2 ;;
+esac

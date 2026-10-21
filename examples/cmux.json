@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "actions": {
+    "pair-tabs": {
+      "type": "command",
+      "command": "exec cmux-pair",
+      "title": "Pair Tabs Side by Side",
+      "keywords": ["pair", "split", "side by side", "combine"],
+      "shortcut": "cmd+ctrl+p",
+      "palette": true,
+      "target": "newTabInCurrentPane"
+    },
+    "unpair-tabs": {
+      "type": "command",
+      "command": "exec cmux-pair --unpair",
+      "title": "Unpair Tabs",
+      "keywords": ["unpair", "separate"],
+      "shortcut": "cmd+ctrl+shift+p",
+      "palette": true,
+      "target": "newTabInCurrentPane"
+    }
+  }
+}
